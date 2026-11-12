@@ -9,12 +9,16 @@ modules:
 
         You can create Forge logs by using the hello-world-logger action.
 
+        You can test the Teamwork Graph connection by using the graph-echo action.
+
         If the user hasn't provided a message when they ask you to create a log
         ask them to provide one.
       conversationStarters:
         - Log a message to Forge logs
+        - Test the Teamwork Graph connection
       actions:
         - hello-world-logger
+        - graph-echo
   action:
     - key: hello-world-logger
       name: Log a message
@@ -30,12 +34,24 @@ modules:
           required: true
           description: |
             "The message that the user has requested be logged to Forge logs"
+    - key: graph-echo
+      name: Test Teamwork Graph
+      function: graphEcho
+      actionVerb: GET
+      description: >
+        Tests the connection to the Teamwork Graph API. Use when the user asks
+        to test the graph connection.
   function:
     - key: messageLogger
       handler: index.messageLogger
+    - key: graphEcho
+      handler: index.graphEcho
 app:
   runtime:
     name: nodejs24.x
     memoryMB: 256
     architecture: arm64
   id: ari:cloud:ecosystem::app/76c4b357-8cb4-46fc-8848-7a5343524535
+permissions:
+  scopes:
+    - read:graph:issue:jira
