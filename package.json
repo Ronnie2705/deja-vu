@@ -5,7 +5,15 @@
   "main": "index.js",
   "private": true,
   "license": "MIT",
+  "scripts": {
+    "test": "vitest run"
+  },
   "dependencies": {
     "@forge/api": "^8.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
   }
 }
