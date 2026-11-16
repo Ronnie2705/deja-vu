@@ -1,39 +1,161 @@
 modules:
+  rovo:mcp:
+    - key: deja-vu-mcp
+      name: Deja Vu incident memory
+      tools:
+        - find-similar-incidents
+        - who-fixed-it
+        - find-runbook
   rovo:agent:
     - key: deja-vu-hello-world-agent
       name: deja-vu
-      description: An agent for testing Forge agent functionality
+      description: Incident memory for on-call teams. Finds similar past incidents, how they were fixed, and who fixed them.
       prompt: >
-        You are a simple agent that helps Forge developers build their first
-        Rovo agent.
+        You are Déjà Vu, an incident-memory assistant for on-call engineers in Jira Service Management.
 
-        You can create Forge logs by using the hello-world-logger action.
+        When the user asks about an incident (by key like PAY-45, or by describing symptoms),
+        always call the find-similar-incidents action first. Pass the incident key as issueKey
+        when you have one; otherwise pass the user's description as symptoms.
 
-        You can test the Teamwork Graph connection by using the graph-echo action.
+        Formatting rules, always:
+        - Write people's names and service names as plain text. NEVER wrap them in a
+          markdown link such as [Maya Chen](/people/Maya Chen) — there is no page for
+          them, so the link renders as broken text. Just write "Maya Chen".
+        - Write incident keys as plain keys like PAY-34; Jira links them automatically.
+          Only use a markdown link when the data gives you a real url field (e.g. a runbook url).
 
-        If the user hasn't provided a message when they ask you to create a log
-        ask them to provide one.
+        Answer from the action's results only:
+        - Start with a one-line verdict using seenBefore and mostRecent, e.g.
+          "Seen 8 times before; most recently PAY-9 on 2026-10-27."
+        - Say who to pull in, from whoFixedIt, e.g. "Maya Chen resolved 6 of them."
+        - List the top matches with key, summary, date, who resolved it, and the resolution note.
+        - Then suggest at most 3 concrete next steps, each citing the incident key it comes from.
+
+        If the user only asks who to call or who fixed this before, call the who-fixed-it action.
+        If the user asks whether there is a runbook, call the find-runbook action.
+
+        When find-similar-incidents returns a runbook object:
+        - runbook.found true → point them to it by title (and link if present).
+        - runbook.missing true → warn clearly that no runbook exists for this recurring failure,
+          and offer to draft one.
+
+        If the user asks you to draft, write or create a runbook, call suggest-runbook.
+        When it returns draftRunbook true, write a runbook in this shape, using ONLY the data given:
+        - Title: a short title for the service and failure.
+        - Service: the service field.
+        - Symptoms: the symptoms list (and signatures, if any).
+        - Fix: the steps in resolutionsSeen, verbatim or lightly cleaned up — do NOT invent steps.
+        - Owner: suggestedOwner, as plain text (no markdown link).
+        End by noting it is a draft based on the basedOn incidents, for a human to review.
+        If it returns runbookExists, say a runbook already exists and point to it.
+        If enoughHistory is false, say there isn't enough history yet.
+        - If the result says noStrongMatch, say you haven't seen this before and suggest standard triage.
+        - Never invent incidents, people, fixes or links. If a field is null, say it's unknown.
+
+        If the user asks to rebuild or refresh the index, call the reindex-incidents action.
+        You can test the Teamwork Graph connection with the graph-echo action when asked.
       conversationStarters:
-        - Log a message to Forge logs
-        - Test the Teamwork Graph connection
+        - Have we seen this incident before?
+        - Find incidents similar to "payments-api 502s after a release"
+        - Who should I pull in for this incident?
+        - Is there a runbook for this incident?
+        - Draft a runbook for this recurring incident
+        - Rebuild the Déjà Vu index
       actions:
-        - hello-world-logger
+        - find-similar-incidents
+        - who-fixed-it
+        - find-runbook
+        - suggest-runbook
+        - reindex-incidents
         - graph-echo
   action:
-    - key: hello-world-logger
-      name: Log a message
-      function: messageLogger
+    - key: find-similar-incidents
+      name: Find similar incidents
+      function: findSimilar
       actionVerb: GET
       description: >
-        When a user asks to log a message, this action logs the message to the
-        Forge logs.
+        Finds resolved past incidents similar to an incident key or a description of symptoms,
+        with how each was resolved and who resolved it. Use for any question like
+        "have we seen this before" or "what fixed this last time".
       inputs:
-        message:
-          title: Message
+        issueKey:
+          title: Incident key
           type: string
-          required: true
-          description: |
-            "The message that the user has requested be logged to Forge logs"
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
+        symptoms:
+          title: Symptoms
+          type: string
+          required: false
+          description: Free-text description of the problem, used when there is no incident key.
+        limit:
+          title: Limit
+          type: integer
+          required: false
+          description: Maximum number of matches to return (default 5, max 10).
+    - key: who-fixed-it
+      name: Who fixed it last time
+      function: whoFixed
+      actionVerb: GET
+      description: >
+        Lists the people who resolved incidents similar to an incident key or a description,
+        with how many each resolved. Use for questions like "who should I pull in" or
+        "who fixed this last time".
+      inputs:
+        issueKey:
+          title: Incident key
+          type: string
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
+        symptoms:
+          title: Symptoms
+          type: string
+          required: false
+          description: Free-text description of the problem, used when there is no incident key.
+    - key: find-runbook
+      name: Find the runbook
+      function: findRunbook
+      actionVerb: GET
+      description: >
+        Finds the Confluence runbook that matches an incident key or a description, or reports
+        that no runbook exists for a recurring failure. Use for "is there a runbook for this".
+      inputs:
+        issueKey:
+          title: Incident key
+          type: string
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
+        symptoms:
+          title: Symptoms
+          type: string
+          required: false
+          description: Free-text description of the problem, used when there is no incident key.
+    - key: suggest-runbook
+      name: Draft a runbook
+      function: suggestRunbook
+      actionVerb: GET
+      description: >
+        Drafts a runbook for a recurring incident that has no runbook yet, grounded in how the
+        similar past incidents were actually resolved. Use when the user asks to draft, write or
+        create a runbook.
+      inputs:
+        issueKey:
+          title: Incident key
+          type: string
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
+        symptoms:
+          title: Symptoms
+          type: string
+          required: false
+          description: Free-text description of the problem, used when there is no incident key.
+    - key: reindex-incidents
+      name: Rebuild incident index
+      function: reindex
+      actionVerb: GET
+      description: >
+        Rebuilds Déjà Vu's index of resolved incidents from Jira. Use only when the user asks
+        to rebuild or refresh the index.
     - key: graph-echo
       name: Test Teamwork Graph
       function: graphEcho
@@ -41,9 +163,35 @@ modules:
       description: >
         Tests the connection to the Teamwork Graph API. Use when the user asks
         to test the graph connection.
+  jira:issuePanel:
+    - key: deja-vu-panel
+      resource: panel-frontend
+      resolver:
+        function: panel-resolver
+      render: native
+      title: Déjà Vu
+      icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+  trigger:
+    - key: index-on-change
+      function: indexIncident
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
   function:
-    - key: messageLogger
-      handler: index.messageLogger
+    - key: findSimilar
+      handler: actions.findSimilar
+    - key: whoFixed
+      handler: actions.whoFixed
+    - key: findRunbook
+      handler: actions.findRunbook
+    - key: suggestRunbook
+      handler: actions.suggestRunbook
+    - key: reindex
+      handler: actions.reindex
+    - key: indexIncident
+      handler: indexer.onIssueEvent
+    - key: panel-resolver
+      handler: panel/resolver.handler
     - key: graphEcho
       handler: index.graphEcho
 app:
@@ -52,6 +200,14 @@ app:
     memoryMB: 256
     architecture: arm64
   id: ari:cloud:ecosystem::app/76c4b357-8cb4-46fc-8848-7a5343524535
+resources:
+  - key: panel-frontend
+    path: src/panel/index.tsx
 permissions:
   scopes:
+    - read:jira-work
+    - read:jira-user
+    - read:confluence-space.summary
+    - read:page:confluence
+    - storage:app
     - read:graph:issue:jira

@@ -65,6 +65,32 @@ export function incidentText(i: Incident): string {
   return [i.summary, i.description ?? ''].join(' ');
 }
 
+/**
+ * Narrows a set of matches to the closest-scoring cluster, so a drafted runbook
+ * is built from the incidents most like the query rather than its whole long
+ * tail. Keeping only the strongest matches also stops a single stray incident's
+ * error code (a lone "502") from surfacing as a signature, since the draft only
+ * promotes signatures that recur across the sources it keeps.
+ *
+ * Deliberately score-based, not term-based: in overlapping domains (PayRail
+ * timeouts vs. release 502s, both on payments-api, both "card payments failing")
+ * no single token cleanly separates the clusters, so a token anchor would split
+ * on a generic word. The score already blends text, service and recency.
+ */
+export function focusToCluster(
+  matches: RankedIncident[],
+  options: { minKeep?: number; cap?: number; ratio?: number } = {},
+): RankedIncident[] {
+  const minKeep = options.minKeep ?? 3;
+  const cap = options.cap ?? 6;
+  const ratio = options.ratio ?? 0.6;
+  if (matches.length <= minKeep) return matches.slice(0, cap);
+
+  const top = matches[0].score;
+  const strong = matches.filter((m) => m.score >= top * ratio);
+  return (strong.length >= minKeep ? strong : matches.slice(0, minKeep)).slice(0, cap);
+}
+
 export function rankIncidents(query: RankQuery, candidates: Incident[], options: RankOptions = {}): RankResult {
   const o = { ...DEFAULTS, ...options };
   const pool = candidates.filter((c) => c.key !== query.key);
