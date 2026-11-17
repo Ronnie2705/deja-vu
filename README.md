@@ -8,6 +8,20 @@ Built for **Atlassian Codegeist 2026** — *Apps for Software Teams*.
 
 ---
 
+## Install for judges
+
+**One-click install (Jira + Confluence):** https://tinyurl.com/deja-vu-install-hackathon
+
+Please **install on both Jira and Confluence** when prompted — the runbook publishing and lookup features need Confluence, and everything else needs Jira.
+
+The app installs empty (no incidents). To load the demo data, run the seed script (`node scripts/seed.mjs`, see **Setup & installation** below) to create 43 synthetic incidents, or create your own `[System] Incident` issues. Then:
+
+- Open an incident and use the **Déjà Vu** issue panel, or chat with the **deja-vu** Rovo agent (e.g. *"Have we seen this before?"*, *"Draft a runbook for &lt;KEY&gt;"*, *"Publish it to Confluence"*).
+- Create a Confluence space named **Runbooks** (or keyed `RUN`) so drafted runbooks have somewhere to publish.
+- Open the **Déjà Vu** project page for the coverage dashboard.
+
+---
+
 ## The problem
 
 At 2 a.m., the on-call engineer staring at a fresh incident almost never knows that the same failure was solved three times last quarter — by three different people, with the fix buried in a closed ticket's resolution note. The knowledge exists; it just isn't reachable at the moment it matters. Runbooks, where they exist at all, drift out of date, and nobody notices the recurring failure that *should* have one.
