@@ -56,6 +56,41 @@ export function draftFromIncidents(incidents: DraftSource[]): RunbookDraft {
   return { service, signatures, symptoms, fixSteps };
 }
 
+export interface RunbookDoc {
+  title: string;
+  service?: string;
+  symptoms: string[];
+  signatures: string[];
+  fixSteps: string[];
+  owner?: string | null;
+  basedOn: string[];
+}
+
+const esc = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const li = (xs: string[]) => xs.map((x) => `<li>${esc(x)}</li>`).join('');
+
+/**
+ * Renders a drafted runbook as Confluence storage-format HTML. Pure and grounded:
+ * it only lays out fields the draft already produced from real incidents, and
+ * always stamps the page as an auto-draft citing its source incidents.
+ */
+export function runbookStorageBody(doc: RunbookDoc): string {
+  const parts: string[] = [];
+  parts.push(
+    `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>Auto-drafted by <strong>Déjà Vu</strong> from past incidents${
+      doc.basedOn.length ? ` (${doc.basedOn.map(esc).join(', ')})` : ''
+    }. Review and refine before relying on it.</p></ac:rich-text-body></ac:structured-macro>`,
+  );
+  if (doc.service) parts.push(`<h2>Service</h2><p>${esc(doc.service)}</p>`);
+  if (doc.signatures.length) parts.push(`<h2>Error signatures</h2><p>${doc.signatures.map(esc).join(', ')}</p>`);
+  if (doc.symptoms.length) parts.push(`<h2>Symptoms</h2><ul>${li(doc.symptoms)}</ul>`);
+  if (doc.fixSteps.length) parts.push(`<h2>Fix</h2><ol>${li(doc.fixSteps)}</ol>`);
+  if (doc.owner) parts.push(`<h2>Suggested owner</h2><p>${esc(doc.owner)}</p>`);
+  return parts.join('');
+}
+
 export interface Runbook {
   id: string;
   title: string;

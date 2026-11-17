@@ -107,3 +107,24 @@ export async function getResolutionNote(key: string): Promise<string | undefined
 export function isTrackedIncident(i: JiraIncident): boolean {
   return i.projectKey === PROJECT_KEY && i.issueType === INCIDENT_TYPE;
 }
+
+/** Adds a comment (ADF document) to an issue. Returns whether it succeeded. */
+export async function addComment(key: string, body: object): Promise<boolean> {
+  const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}/comment`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  if (!res.ok) console.warn(`Déjà Vu: addComment ${key} failed ${res.status} ${await res.text()}`);
+  return res.ok;
+}
+
+/** True if any comment on the issue contains the given marker text — used to avoid double-posting. */
+export async function commentExists(key: string, marker: string): Promise<boolean> {
+  const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}/comment?maxResults=50`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) return false;
+  const data = (await res.json()) as { comments?: { body: unknown }[] };
+  return (data.comments ?? []).some((c) => adfToText(c.body).includes(marker));
+}

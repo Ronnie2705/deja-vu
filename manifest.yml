@@ -49,11 +49,23 @@ modules:
         End by noting it is a draft based on the basedOn incidents, for a human to review.
         If it returns runbookExists, say a runbook already exists and point to it.
         If enoughHistory is false, say there isn't enough history yet.
+        After showing a draft, offer to publish it to Confluence.
+
+        If the user asks to publish, save or create the runbook page in Confluence,
+        call publish-runbook (pass the same issueKey or symptoms; you may pass a title).
+        - published true → confirm with the page title, link to url if present, and remind
+          them to rebuild the index so the new runbook becomes searchable.
+        - runbookExists true → say a runbook already exists and don't publish a duplicate.
+        - published false → relay the message (e.g. a page with that title already exists).
         - If the result says noStrongMatch, say you haven't seen this before and suggest standard triage.
         - Never invent incidents, people, fixes or links. If a field is null, say it's unknown.
 
         If the user asks to rebuild or refresh the index, call the reindex-incidents action.
-        You can test the Teamwork Graph connection with the graph-echo action when asked.
+
+        If the user asks what else the responder/assignee is working on, how loaded they
+        are, or for connected context from the Teamwork Graph, call graph-context. Report
+        the assignedWorkItems it returns (by title and status), or, if the list is empty,
+        relay its message plainly — don't invent work items.
       conversationStarters:
         - Have we seen this incident before?
         - Find incidents similar to "payments-api 502s after a release"
@@ -66,8 +78,9 @@ modules:
         - who-fixed-it
         - find-runbook
         - suggest-runbook
+        - publish-runbook
         - reindex-incidents
-        - graph-echo
+        - graph-context
   action:
     - key: find-similar-incidents
       name: Find similar incidents
@@ -149,6 +162,30 @@ modules:
           type: string
           required: false
           description: Free-text description of the problem, used when there is no incident key.
+    - key: publish-runbook
+      name: Publish the drafted runbook
+      function: publishRunbook
+      actionVerb: GET
+      description: >
+        Publishes a drafted runbook as a new page in the Confluence runbook space,
+        grounded in how the similar past incidents were resolved. Use only after the
+        user agrees to publish, write or save the runbook to Confluence.
+      inputs:
+        issueKey:
+          title: Incident key
+          type: string
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
+        symptoms:
+          title: Symptoms
+          type: string
+          required: false
+          description: Free-text description of the problem, used when there is no incident key.
+        title:
+          title: Page title
+          type: string
+          required: false
+          description: Optional title for the runbook page; a sensible default is used if omitted.
     - key: reindex-incidents
       name: Rebuild incident index
       function: reindex
@@ -156,13 +193,20 @@ modules:
       description: >
         Rebuilds Déjà Vu's index of resolved incidents from Jira. Use only when the user asks
         to rebuild or refresh the index.
-    - key: graph-echo
-      name: Test Teamwork Graph
-      function: graphEcho
+    - key: graph-context
+      name: Responder context from Teamwork Graph
+      function: graphContext
       actionVerb: GET
       description: >
-        Tests the connection to the Teamwork Graph API. Use when the user asks
-        to test the graph connection.
+        Looks up live context for an incident from the Teamwork Graph: what else the
+        incident's assignee is currently working on. Use when asked what else the
+        responder is handling, how loaded they are, or for connected context from the graph.
+      inputs:
+        issueKey:
+          title: Incident key
+          type: string
+          required: false
+          description: The Jira key of the incident, for example PAY-45.
   jira:issuePanel:
     - key: deja-vu-panel
       resource: panel-frontend
@@ -171,11 +215,22 @@ modules:
       render: native
       title: Déjà Vu
       icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
+  jira:projectPage:
+    - key: deja-vu-dashboard
+      resource: dashboard-frontend
+      resolver:
+        function: dashboard-resolver
+      render: native
+      title: Déjà Vu
+      icon: https://developer.atlassian.com/platform/forge/images/icons/issue-panel-icon.svg
   trigger:
-    - key: index-on-change
-      function: indexIncident
+    - key: index-on-create
+      function: triageOnCreate
       events:
         - avi:jira:created:issue
+    - key: index-on-update
+      function: indexIncident
+      events:
         - avi:jira:updated:issue
   function:
     - key: findSimilar
@@ -186,14 +241,20 @@ modules:
       handler: actions.findRunbook
     - key: suggestRunbook
       handler: actions.suggestRunbook
+    - key: publishRunbook
+      handler: actions.publishRunbook
     - key: reindex
       handler: actions.reindex
     - key: indexIncident
       handler: indexer.onIssueEvent
+    - key: triageOnCreate
+      handler: indexer.onIssueCreated
     - key: panel-resolver
       handler: panel/resolver.handler
-    - key: graphEcho
-      handler: index.graphEcho
+    - key: dashboard-resolver
+      handler: dashboard/resolver.handler
+    - key: graphContext
+      handler: graph.graphContext
 app:
   runtime:
     name: nodejs24.x
@@ -203,11 +264,16 @@ app:
 resources:
   - key: panel-frontend
     path: src/panel/index.tsx
+  - key: dashboard-frontend
+    path: src/dashboard/index.tsx
 permissions:
   scopes:
     - read:jira-work
     - read:jira-user
-    - read:confluence-space.summary
+    - write:jira-work
+    - read:space:confluence
     - read:page:confluence
+    - write:page:confluence
     - storage:app
     - read:graph:issue:jira
+    - read:graph:user:atlassian

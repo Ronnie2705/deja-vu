@@ -3,7 +3,8 @@ import { getIncident } from './adapters/jira';
 import { ensureIndex, reindexAll } from './indexer';
 import { rankIncidents, focusToCluster, type RankQuery } from './core/rank';
 import { whoFixedIt } from './core/experts';
-import { matchRunbook, draftFromIncidents } from './core/runbook';
+import { matchRunbook, draftFromIncidents, runbookStorageBody, type RunbookDoc } from './core/runbook';
+import { createRunbookPage } from './adapters/confluence';
 import { RECURRING_THRESHOLD } from './config';
 import type { IncidentIndex, IndexedIncident } from './adapters/store';
 
@@ -11,6 +12,7 @@ interface ActionPayload {
   issueKey?: string;
   symptoms?: string;
   limit?: number | string;
+  title?: string;
   context?: { jira?: { issueKey?: string } };
 }
 
@@ -134,47 +136,92 @@ export async function findRunbook(payload: ActionPayload) {
   };
 }
 
-export async function suggestRunbook(payload: ActionPayload) {
+/** Guard + grounded draft shared by suggest-runbook and publish-runbook, so both agree. */
+type DraftOutcome =
+  | { error: string }
+  | { status: 'noMatch'; label: string }
+  | { status: 'exists'; label: string; title: string; url: string | null }
+  | { status: 'tooFew'; label: string; seen: number }
+  | { status: 'ok'; label: string; seenBefore: number; doc: RunbookDoc };
+
+async function prepareDraft(payload: ActionPayload): Promise<DraftOutcome> {
   const q = await buildQuery(payload);
-  if ('error' in q) return q;
+  if ('error' in q) return { error: q.error };
   const { index, all } = await search(q.query, 50);
 
-  if (all.length === 0) {
-    return { query: q.label, message: 'No similar past incidents, so there is nothing to base a runbook on.' };
-  }
+  if (all.length === 0) return { status: 'noMatch', label: q.label };
   // Don't draft one if a good runbook already exists.
   if (index.runbooks && index.runbooks.length > 0) {
     const { best, confident } = matchRunbook(q.query.text, index.runbooks);
-    if (confident && best) {
-      return { query: q.label, runbookExists: true, title: best.runbook.title, url: best.runbook.url ?? null };
-    }
+    if (confident && best) return { status: 'exists', label: q.label, title: best.runbook.title, url: best.runbook.url ?? null };
   }
-  if (all.length < RECURRING_THRESHOLD) {
-    return {
-      query: q.label,
-      enoughHistory: false,
-      seenBefore: all.length,
-      message: `Only seen ${all.length} time(s) — not enough of a pattern to justify a runbook yet.`,
-    };
-  }
+  if (all.length < RECURRING_THRESHOLD) return { status: 'tooFew', label: q.label, seen: all.length };
 
   // Draft from the one failure mode this query is really about, not every weak
   // match — otherwise a PayRail runbook bleeds in release 502s and ledger timeouts.
   const focused = focusToCluster(all);
   const incidents = focused.map((m) => m.incident as IndexedIncident);
   const draft = draftFromIncidents(incidents);
-  const owner = whoFixedIt(focused)[0]?.name ?? null;
+  const service = draft.service ?? q.query.service ?? undefined;
+  const sig = draft.signatures[0];
+  const title = (payload.title && payload.title.trim()) || `Déjà Vu draft: ${service ?? 'incident'}${sig ? ` ${sig}` : ' failures'}`;
   return {
-    query: q.label,
+    status: 'ok',
+    label: q.label,
+    seenBefore: all.length,
+    doc: {
+      title,
+      service,
+      symptoms: draft.symptoms,
+      signatures: draft.signatures,
+      fixSteps: draft.fixSteps,
+      owner: whoFixedIt(focused)[0]?.name ?? null,
+      basedOn: incidents.map((i) => i.key),
+    },
+  };
+}
+
+export async function suggestRunbook(payload: ActionPayload) {
+  const r = await prepareDraft(payload);
+  if ('error' in r) return r;
+  if (r.status === 'noMatch') return { query: r.label, message: 'No similar past incidents, so there is nothing to base a runbook on.' };
+  if (r.status === 'exists') return { query: r.label, runbookExists: true, title: r.title, url: r.url };
+  if (r.status === 'tooFew') {
+    return { query: r.label, enoughHistory: false, seenBefore: r.seen, message: `Only seen ${r.seen} time(s) — not enough of a pattern to justify a runbook yet.` };
+  }
+  return {
+    query: r.label,
     draftRunbook: true,
-    seenBefore: all.length, // honest recurrence count across all similar incidents
-    basedOnCount: incidents.length, // how many the draft actually used
-    service: draft.service ?? q.query.service ?? null,
-    signatures: draft.signatures,
-    symptoms: draft.symptoms,
-    resolutionsSeen: draft.fixSteps, // grounded fix steps — the agent must use only these
-    suggestedOwner: owner,
-    basedOn: incidents.map((i) => i.key),
+    suggestedTitle: r.doc.title,
+    seenBefore: r.seenBefore, // honest recurrence count across all similar incidents
+    basedOnCount: r.doc.basedOn.length, // how many the draft actually used
+    service: r.doc.service ?? null,
+    signatures: r.doc.signatures,
+    symptoms: r.doc.symptoms,
+    resolutionsSeen: r.doc.fixSteps, // grounded fix steps — the agent must use only these
+    suggestedOwner: r.doc.owner ?? null,
+    basedOn: r.doc.basedOn,
+  };
+}
+
+export async function publishRunbook(payload: ActionPayload) {
+  const r = await prepareDraft(payload);
+  if ('error' in r) return r;
+  if (r.status === 'noMatch') return { query: r.label, published: false, message: "No similar incidents to base a runbook on, so there's nothing to publish." };
+  if (r.status === 'exists') return { query: r.label, published: false, runbookExists: true, title: r.title, url: r.url };
+  if (r.status === 'tooFew') {
+    return { query: r.label, published: false, enoughHistory: false, seenBefore: r.seen, message: `Only seen ${r.seen} time(s) — not enough of a pattern to publish a runbook yet.` };
+  }
+
+  const result = await createRunbookPage(r.doc.title, runbookStorageBody(r.doc));
+  if (!result.ok) return { query: r.label, published: false, message: `Couldn't create the page: ${result.reason}` };
+  return {
+    query: r.label,
+    published: true,
+    title: r.doc.title,
+    url: result.url ?? null,
+    basedOn: r.doc.basedOn,
+    message: `Published "${r.doc.title}" to Confluence, grounded in ${r.doc.basedOn.join(', ')}. Rebuild the index to make it searchable.`,
   };
 }
 
